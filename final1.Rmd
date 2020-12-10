@@ -1,0 +1,278 @@
+---
+title: "Predict the probability of success when a project land on Kickstarter platform"
+date: "December 10, 2020"
+author: "Zhitian Liu"
+output:
+  pdf_document: default
+  html_document: default
+---
+```{r setup, include=FALSE}
+knitr::opts_chunk$set(echo = TRUE)
+library(tidyverse)
+library(ggplot2)
+library(stringr)
+library(lubridate)
+library(lmerTest)
+library(rstanarm)
+options(scipen=200)
+
+
+```
+# Abstract 
+Kickstarter is a world-famous online crowdfunding platform. Building a predictive model for Kickstarter can benefits both project owners and the platform itself, by using the data collected from kickstarter, we  use multilevel logistic regression model to forcast a project will succeed or failed in the end. Our results show that our model can achieve a prediction accuracy of 0.7. Adding more information into the model and take inflation into account may be next step to improve the predictive model.
+
+# Introduction
+## Background
+Kickstarter is a world-famous online crowdfunding platform. The platform mainly focuses on creativity and merchandising. Project owners propose there projects on the platform, and backers donate the money if they like this idea and wish it to come true. 
+The question I want to solve here is: **if I'm the manager of the Kickstarter company, can I forecast whether each project will succeed in the end When they just land on the website. **
+The reason I'm interested in this question is that by having this Success rate forecasting system, we can inform the project owners when they upload their proposals, we can remind them of the probability that their proposal will be successfully funded, and **automatically suggest** to them that they can increase the probability of success, such as reducing their target amount and extending the deadline. If we predict that the success probability of a crowdfunding project is too low, we can even add some **paid services**, such as advertising for them or giving them a high position in search engines. Generally speaking, if we can predict the success probability of a crowdfunding project, it will benefit both the project owners and the platform.
+
+## About the data and model
+The data I found from Kaggle is collected from Kickstarter Platform. The data set is large, it has **over 300k observations**. Each observation describe a project’s name, ID, country category, time they launched, time they closed,the amount of money which the project owner hope to raise, and the amount of money they actually raised, number of backers the project owned, also it has a indicator variable indicates the current condition (failed or successful) the project is in (2018).
+the data set can divided into 159 groups by category of the project. The outcome of the model is binary variable (failed or successful). So, it can be used to fit a logistic multilevel model. I would be use **glmer** function in **lmerTest** package to generate the regression model.
+
+# Methods
+## data processing
+To start the analysis, we firstly need to select the predictor we might use in the regression model. Knowing that our purpose is to predict whether or not a crowdfunding project will succeed when they just land on to the website, so we can't use predictors like number of backers, the money they raised, because these information is collected at the end of crowdfunding process. So the variables that may contribute to the model are launched time, closed time, category, country, goal amount in USD (the USD conversion made by [fixer.io api](https://fixer.io/))
+Through the summary data set, we found that in addition to successful and failed, the outcome has a very small amount of other states, such as canceled and suspended. In order to build a more intuitive model, I defined all observations that the state variable is not successful as failed. Then convert the outcome into 0-1 variable, **1** represent the project successfully raised money they want, **0** represent failed.
+I also used package **lubridate** to deal with the time variable, convert the launched time into launched year, calculate the duration of the project in days.
+I found that the numeric variable "goal amount in USD" has a very big range, so I took the log scale of it for a better model fitting later. 
+```{r , include=FALSE}
+data=read.csv("C:/Users/Lenovo/Desktop/ks-projects-201801.csv/ks-projects-201801.csv",stringsAsFactors=FALSE,quote = "")
+#view(data)
+#summary(data)
+data$state[data$state=="canceled"|data$state=="undefined"|data$state=="suspended"|data$state=="live"]="failed"
+
+data1=filter(data, data$state=="failed"|state=="successful")
+#unique(data1$country)
+
+data1$launched_date=date(data1$launched)
+
+data1$time=interval(data1$launched_date, data1$deadline)
+
+data1$duration_days=time_length(data1$time, unit = "day")
+
+data1$usd_goal_real=as.numeric(data1$usd_goal_real)
+
+#
+data1$start_year=year(data1$launched)
+#
+data1=filter(data1,start_year>1970)
+
+#s
+data1$state_01=ifelse(data1$state=="failed",0,1)
+#log scale
+data1$log_real_goal=log(data1$usd_goal_real)
+#
+data1=filter(data1,usd_goal_real>0)
+#
+data1=filter(data1,start_year<2018)
+```
+## Exploratory data analysis
+In order to better observe these variables, I generate some EDA.
+Firstly I want to see the distribution of the categorical variables: *category* and *country* of the project.
+Due to there are 159 categories in total, it's pretty hard to plot them all, so I only visualized the 15 most popular categories, we can see from the bar chart on the left, The most popular category of the crowdfunding project is Product Design, there were over 20000 cumulative projects focus on product design proposed from 2009-2018. Also we can see that Games, Music and Documentary were also very popular categories. Except for Tabletop games,Shorts and Theater, most of the project in these categories are more likely to failed to raised the money at last.
+The chart on the right indicates the country distribution of projects on Kickstarter platform, it is very obvious the distribution is skewed, most of the projects are proposed from the US (over 250000).
+
+```{r,echo=F, results="asis",fig.height=4,fig.width=8}
+#159 categories
+#unique(data1$category)
+#dataaa=filter(data1,category=="")
+graphdata=table(data1$category)
+graphdata=as.data.frame(graphdata)
+data_mostappear = filter(
+  data1,
+  category == "Product Design" |
+    category == "Documentary" |
+    category == "Music" |
+    category == "Tabletop Games" |
+    category == "Shorts" |
+    category == "Video Games" |
+    category == "Food" |
+    category == "Film & Video"|
+    category == "Fiction" |
+    category == "Fashion" |
+    category == "Art" |
+    category == "Nonfiction" |
+    category == "Apparel" |
+    category == "Theater"
+)
+
+p1=ggplot(data_mostappear,aes(forcats::fct_infreq(category),fill=state))+geom_bar()+coord_flip()+xlab("main category")+ylab("number of projects")+theme(legend.position = c(0.8,0.7))
+
+
+p2=ggplot(data1,aes(forcats::fct_infreq(country),fill=state))+geom_bar(stat="count")+coord_flip()+xlab("country")+ylab("number of projects")+theme(legend.position = c(0.8,0.7))
+
+cowplot::plot_grid(p1,p2, labels = c("number of projects in most appeared categories", "number of projects in each country"),label_size=10,scale=0.9,align = 'v')
+```
+Then, I create 2 boxplots to explore the 2 continuous variable:**log scale of goal amount in USD** and **durations of the project**.
+The boxplot on the left shows that the projects which were failed in the end had relatively higher funding needs than the projects which were successful raised enough money in the end.
+The plot on the right shows that both failed and successful projects has the same average duration-30 days. But the opening duration of failed projects is much more uncertain.
+
+```{r,echo=F, results="asis",fig.cap="",fig.height=4,fig.width=7}
+p3=ggplot(data1,aes(x=state,y=log_real_goal,fill=state))+geom_boxplot(outlier.shape = NA)+ theme(legend.position = c(0.8,0.9))
+
+ylim2<-boxplot.stats(data1$duration_days)$stats[c(1, 5)]
+p4=ggplot(data1,aes(x=state,y=duration_days,fill=state))+geom_boxplot(outlier.shape = NA)+coord_cartesian(ylim =ylim2)+theme(legend.position = c(0.8,0.9))
+
+cowplot::plot_grid(p3,p4, labels = c("log scale of goal amount in USD", "durations of the project"),label_size=10,scale=0.9,align = 'v')
+```
+The last EDA graph is a dot plot indicates the successful rate for the projects of most popular categories in 2009,2014 and 2017, I want to see whether if  there are an obvious trend of the successful rate changing through year. The answer is yes, in most categories, the successful rate of projects in 2009 is higher than 2017, we can assume there's a decreaing trend of the successful rate through time.
+Although the trend is not very significant since sometimes the successful rate of project in 2014 is lower than 2017. 
+
+```{r,echo=F, results="asis",fig.height=4,fig.width=7}
+#project start time VS state
+
+#2009,2014,2017 Dot plot
+
+
+data_time0=filter(data_mostappear,start_year==2009|start_year==2014|start_year==2017)
+data_time0 = filter(
+  data_time0,
+  category == "Product Design" |
+    category == "Documentary" |
+    category == "Music" |
+    category == "Tabletop Games" |
+    category == "Shorts" |
+    category == "Food" |
+    category == "Film & Video"|
+    category == "Fiction" |
+    category == "Fashion" |
+    category == "Art" |
+    category == "Nonfiction" |
+    category == "Theater"
+)
+data_time=table(data_time0$state,data_time0$category,data_time0$start_year)
+data_time=as.data.frame(data_time)
+colnames(data_time)=c("state","category","start_year","freq")
+
+
+percentile=dplyr::group_by(data_time,start_year,category)%>%dplyr::mutate(success_rate=freq/sum(freq)*100)
+percentile_su=subset(percentile,state=="successful")
+
+ggplot(percentile_su, aes(x = category, y = success_rate, color = start_year)) +
+  geom_point(size = 3) + theme(axis.text.x = element_text(angle = 60, hjust =
+                                                            1)) + ggtitle("successful rate for the most popular categories measure by year")+coord_cartesian(ylim=c(0,75))
+
+```
+
+
+# Result
+## model selection
+After the EDA part, we learned that all the predictors we selected have a strong relationship with the outcome. So now we can start the model selection part. By using **glmer** function in **lmerTest ** package, we first add the random effect predictor, which is **country** and **category** of the project, and then we add fix effect predictor (**start year**,**duration**, **log scale goal amount in usd**)one by one. By checking the AIC value and the binned residual plot, checking the coefficient value, I have my best fit logistic multilevel regression model. All the predictor I just mentioned before is in this model.
+
+## validation
+I generate a binned residual plot firstly, It indicates a good quite good fit for this model. The negative and positive residuals are almost evenly distributed-that is good. Most residual points are in the acceptable range which is theoretical 95% error bounds. Although there are several points in the two tails of the the  binned residual plot are out of the bounds, but is acceptable. 
+
+```{r,echo=F,results="asis",fig.height=4,fig.width=7}
+
+
+#fit0=glmer(state_01 ~1+(1|country),data=data1,family=binomial(link="logit"),control=glmerControl("bobyqa"),nAGQ=0)
+#summary(fit0)
+#accuracy
+#predict_value=ifelse(fitted(fit0)>=0.5,1,0)
+#predict_value=as.vector(predict_value)
+#accuracy=cbind.data.frame(predict_value,data1$state_01)
+#accuracy$correct=ifelse(accuracy$predict_value==accuracy$`data1$state_01`,1,0)
+#acc=sum(accuracy$correct)/nrow(accuracy)
+#acc
+
+
+#fit0.5=glmer(state_01 ~1+(1|main_category)+(1|country),data=data1,family=binomial(link="logit"),control=glmer#Control("bobyqa"),nAGQ=0)
+#summary(fit0.5)
+
+#predict_value=ifelse(fitted(fit0.5)>=0.5,1,0)
+#predict_value=as.vector(predict_value)
+#accuracy=cbind.data.frame(predict_value,data1$state_01)
+#accuracy$correct=ifelse(accuracy$predict_value==accuracy$`data1$state_01`,1,0)
+#acc=sum(accuracy$correct)/nrow(accuracy)
+#acc
+
+
+
+#fit1=glmer(state_01 ~duration_days+log_real_goal+(1|main_category)+(1|country),data=data1,family=binomial(link="logit"),control=glmerControl("bobyqa"),nAGQ=0)
+#summary(fit1)
+
+
+#fit2=glmer(state_01 ~log_real_goal+start_year+duration_days+(1|main_category)+(1|country),data=data1,family=binomial(link="logit"),control=glmerControl("bobyqa"),nAGQ=0)
+#summary(fit2)
+
+
+fit3=glmer(state_01 ~log_real_goal+start_year+duration_days+(1|category)+(1|country),data=data1,family=binomial(link="logit"),control=glmerControl("bobyqa"),nAGQ=0)
+#residual plot
+obsmat <-model.matrix(~state_01-1,data=data1)
+resdimat<-obsmat-fitted(fit3)
+arm::binnedplot(fitted(fit3),resdimat)
+
+
+
+```
+I also did a predict test for this model, I put the model into my original data set and compare the predicted result with the real value, and got the accuracy of 0.695-nearly**0.7**, It is also the best we can get among all the model we tried. 
+
+## Inference 
+From the output of the **glmer**, We know all the fix effect are significant, I also calculate the 95% confidence interval for fix effect.. None of these predictor has a CI across 0, which is good.
+
+# Discussion
+Overall speaking, The effect of the model has met our expectations, however, there are also many drawbacks that can be improved in the future.
+## limitation
+The model is not perfect, The accuracy to predict a new project is only 0.7, (we don't even know the performance to predict a new data set). There are a lot of drawbacks for this model.
+First of all, the data is very asymmetrical, and the number of projects in each country, category, and year is very different.
+Secondly, We didn't take into account the inflation, Among those years, the value of money is changing, I think it would be better calculate the real value of the goal amount.
+Thirdly, The predictors are not enough, we only have 5 predictors in the model, In my opinion, The model would be better if we can put more useful variables in it.
+At last, I didn't try varying slope model because I don't know how to interpret.
+## How to improve
+We can improve the model by adding more useful information into the model, The Kickstarter platform can send a questionnaire when project owners submits the application and ask them more. We can also take into account the inflation.
+
+# Bibliography
+The function we used to generate the multilevel logistic regression is *glmer* from package **lmerTest**
+The data source is download from https://www.kaggle.com/kemical/kickstarter-projects?select=ks-projects-201801.csv
+ordained from https://www.kickstarter.com/
+
+# Appendix
+## 95% CI for the final model and the predicting accuracy
+```{r}
+
+summary(fit3)
+
+fm1W <- confint(fit3, method="Wald")
+fm1W
+
+#accuracy
+predict_value=ifelse(fitted(fit3)>=0.5,1,0)
+predict_value=as.vector(predict_value)
+accuracy=cbind.data.frame(predict_value,data1$state_01)
+accuracy$correct=ifelse(accuracy$predict_value==accuracy$`data1$state_01`,1,0)
+acc=sum(accuracy$correct)/nrow(accuracy)
+acc
+#model selection 
+#fit0=glmer(state_01 ~1+(1|country),data=data1,family=binomial(link="logit"),control=glmerControl("bobyqa"),nAGQ=0)
+#summary(fit0)
+#accuracy
+#predict_value=ifelse(fitted(fit0)>=0.5,1,0)
+#predict_value=as.vector(predict_value)
+#accuracy=cbind.data.frame(predict_value,data1$state_01)
+#accuracy$correct=ifelse(accuracy$predict_value==accuracy$`data1$state_01`,1,0)
+#acc=sum(accuracy$correct)/nrow(accuracy)
+#acc
+
+
+#fit0.5=glmer(state_01 ~1+(1|main_category)+(1|country),data=data1,family=binomial(link="logit"),control=glmer#Control("bobyqa"),nAGQ=0)
+#summary(fit0.5)
+
+#predict_value=ifelse(fitted(fit0.5)>=0.5,1,0)
+#predict_value=as.vector(predict_value)
+#accuracy=cbind.data.frame(predict_value,data1$state_01)
+#accuracy$correct=ifelse(accuracy$predict_value==accuracy$`data1$state_01`,1,0)
+#acc=sum(accuracy$correct)/nrow(accuracy)
+#acc
+
+
+
+#fit1=glmer(state_01 ~duration_days+log_real_goal+(1|main_category)+(1|country),data=data1,family=binomial(link="logit"),control=glmerControl("bobyqa"),nAGQ=0)
+#summary(fit1)
+
+
+#fit2=glmer(state_01 ~log_real_goal+start_year+duration_days+(1|main_category)+(1|country),data=data1,family=binomial(link="logit"),control=glmerControl("bobyqa"),nAGQ=0)
+#summary(fit2)
+```
+
